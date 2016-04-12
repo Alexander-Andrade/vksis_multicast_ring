@@ -34,12 +34,10 @@ class Host:
         self.is_tail = True
         self.is_head = False
         self.peers = []
-        self.max_greeting_reply_time = 3
         self.actions = {FrameType.Data : self.handle_data,
                         FrameType.GreetingRequest : self.handle_greeting_reguest,
                         FrameType.GreetingReply : self.handle_greeting_reply,
-                        FrameType.Leaving : self.handle_leaving,
-                        FrameType.Jam : self.handle_jam}
+                        FrameType.Leaving : self.handle_leaving}
         self.stop_sending_thread_event = threading.Event()  
         self.frame_sending_thread = threading.Thread(target=self.frame_sending_routine,args=(self.stop_sending_thread_event,))
 

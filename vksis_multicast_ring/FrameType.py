@@ -6,4 +6,3 @@ class FrameType(Enum):
     GreetingRequest = 1
     GreetingReply = 2
     Leaving = 3
-    Jam = 4
