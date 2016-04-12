@@ -26,14 +26,13 @@ class Host:
         self.group_sock.bind((self.interf_ip,self.group_port))
         self.group_sock.join_group(self.group, self.interf_ip)
         self.private_sock = MixedSocket(AF_INET,SOCK_DGRAM,IPPROTO_UDP)
-        #time of the frame transfer and to leave the medium
-        self.frame_transf_interv = kwargs.get('frame_transf_interv',3)
-        self.last_recv_timestemp = 0
-        self.inter_frame_gap = kwargs.get('inter_frame_gap',1)
-        self.min_frame_gap = kwargs.get('min_frame_gap',self.frame_transf_interv)
+        self.min_frame_gap = kwargs.get('min_frame_gap',3)
         self.max_frame_gap = kwargs.get('max_frame_gap',8)
-        self.max_sending_attempts = 16
         self.host_as_peer = (self.interf_ip, self.id)
+        self.peer_sendto = None
+        self.peer_recvfrom = None
+        self.is_tail = True
+        self.is_head = False
         self.peers = []
         self.max_greeting_reply_time = 3
         self.actions = {FrameType.Data : self.handle_data,
@@ -43,9 +42,6 @@ class Host:
                         FrameType.Jam : self.handle_jam}
         self.stop_sending_thread_event = threading.Event()  
         self.frame_sending_thread = threading.Thread(target=self.frame_sending_routine,args=(self.stop_sending_thread_event,))
-
-    def group_send(self,msg):
-        self.private_sock.sendto(msg,(self.group,self.group_port))
 
     def handle_data(self, frame):
         #skip data
@@ -62,90 +58,41 @@ class Host:
         self.stop_sending_thread_event.set()
 
     def handle_greeting_reguest(self, frame):
-        #stop sending data, it overflows udp receive buffer
-        self.stop_sending_thread()
-        peer = frame.src_addr
-        self.reg_unknown_peer(peer)
-        #send self peer-list as greeting reply
-        #set timeout and listen bus, if enother peer managed first
-        reply_after_delay = random.uniform(0, self.max_greeting_reply_time)   
-        #listen bus with timeout
-        self.group_sock.settimeout(reply_after_delay)
-        try:
-            self.group_sock.recv_frame_from(type=FrameType.GreetingReply)
-        except OSError as e:
-            #this host is first-> send peers-list to the private peer socket (frame.data contains private peer socket)
-            self.group_sock.send_frame_to(Frame(dst_addr=peer, src_addr=self.host_as_peer, type=FrameType.GreetingReply, data=self.peers+[self.host_as_peer]),(self.group,self.group_port))
-        finally:
-            self.group_sock.settimeout(None)
-        self.resume_sending_thread()
+        if self.is_tail:
+            #stop sending data, it overflows udp receive buffer
+            self.stop_sending_thread()
+            peer = frame.src_addr
+            #when this host was the first
+            if not self.peers:
+                self.is_head = True
+            #append self to the end once? while this host is tail
+            self.peers.append(self.host_as_peer) 
+            self.group_sock.send_frame_to(Frame(dst_addr=peer, src_addr=self.host_as_peer, type=FrameType.GreetingReply, data=self.peers),(self.group,self.group_port))
+            #put new tail to the peers
+            self.reg_unknown_peer(peer)
+            #change topology
+            self.peer_sendto = peer
+            self.resume_sending_thread()
+        if self.is_head:
+            self.stop_sending_thread()
+            #change topology
+            self.peer_recvfrom = peer
+            self.resume_sending_thread()
 
     def handle_greeting_reply(self, frame):
         #get peers-list from other peer 
-        self.peers.extend( frame.data )
-        #remove self from peer-list
-        self.peers.remove(self.host_as_peer)
+        self.peers = frame.data
+        #change topology
+        self.peer_sendto = self.peers[0]
+        self.peer_recvfrom = frame.src_addr
         #began sending to peers 
         self.resume_sending_thread()
 
 
     def handle_leaving(self, frame):
+        #more complex
         if peer in self.peers:
             self.peers.remove(frame.src_addr)
-
-    def handle_jam(self, frame):
-        #stop sending frames while is collision on the media(bus)
-        self.stop_sending_thread()
-        time.sleep(self.frame_transf_interv)
-        print('jam,sleep={} s ...'.format(self.frame_transf_interv),end=' ',flush=True)
-        print('resume sending',flush=True)
-        #resume sending thread
-        self.resume_sending_thread()
-             
-    def is_medium_busy(self):
-        return self.frame_transf_interv > time.time() - self.last_recv_timestemp
-
-    def is_collision(self):
-        return self.frame_transf_interv > time.time() - self.last_recv_timestemp
-
-    def calc_exp_delay(self,n_transf_attempts):
-        k = min(n_transf_attempts,10)
-        r = random.randrange(0,math.pow(2,k))
-        return r * self.frame_transf_interv
-
-    def send_frame(self):
-        n_transf_attempts = 0
-        while True:
-            #checking if medium(bus) is busy (pooling)
-            if self.is_medium_busy():
-                #print('medium is busy')
-                continue
-            #waiting for Inter Frame Gap elapced
-            print('IFG sleep={} s'.format(self.inter_frame_gap),flush=True)
-            time.sleep(self.inter_frame_gap)
-            #begin transfer  and select randomly any peer to send frame
-            chosen_peer = random.choice(self.peers)
-            print('begin transfer ...', end=' ',flush=True)
-            self.private_sock.send_frame_to(Frame(src_addr=self.host_as_peer, dst_addr=chosen_peer, data='data'), (self.group, self.group_port))
-            #checking collisions
-            #collision is when time from the last received frame not elapsed
-            if self.is_collision():
-                print('collision detected',end=' ',flush=True)
-                #sending jam-signal
-                self.group_sock.send_frame_to(Frame(src_addr=self.host_as_peer,type=FrameType.Jam), (self.group, self.group_port))
-                n_transf_attempts += 1
-                if n_transf_attempts > self.max_sending_attempts:
-                    #fail to send frame
-                    print('fail to send frame',flush=True)
-                #calculate exponential delay 
-                exp_delay = self.calc_exp_delay(n_transf_attempts)
-                print('exp dalay={} s'.format(exp_delay),flush=True)
-                #and wait this delay
-                time.sleep(exp_delay)
-            #transfered succesfully
-            else: 
-                print('success',flush=True)
-                break
 
     def delay_to_prepare_frame(self):
         #randomize sending activity
@@ -157,10 +104,10 @@ class Host:
     def frame_sending_routine(self,stop_sending_thread_event):
         while True:
             self.delay_to_prepare_frame()
-            #stop sending frames when jam sygnal arrived and while greeting longs
+            #if there is need to stop srnding messages
             stop_sending_thread_event.wait()
             if self.peers: 
-                self.send_frame()
+                self.private_sock.send_frame_to(Frame(src_addr=self.host_as_peer, dst_addr=self.peer_sendto, data='data'), (self.group, self.group_port)) 
             
     def am_i_recepient(self, frame):
         #if there is no target address in frame
@@ -179,9 +126,9 @@ class Host:
             frame,phis_addr = self.group_sock.recv_frame_from()
             #test if frame is from this host
             if not self.am_i_recepient(frame):
+                print('ring transit from {} to {}'.format(frame.src_addr,frame.dst_addr))
                 continue
             #mark that the foreign frame arrived
-            self.last_recv_timestemp = time.time()
             print(repr(frame))
             self.actions[frame.type](frame)
 

@@ -12,6 +12,9 @@
     <OutputPath>.</OutputPath>
     <Name>vksis_multicast_ring</Name>
     <RootNamespace>vksis_multicast_ring</RootNamespace>
+    <LaunchProvider>Standard Python launcher</LaunchProvider>
+    <CommandLineArguments>224.0.0.1 6000</CommandLineArguments>
+    <EnableNativeCodeDebugging>False</EnableNativeCodeDebugging>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
